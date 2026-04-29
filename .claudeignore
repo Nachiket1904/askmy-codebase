@@ -1,0 +1,11 @@
+node_modules/
+.git/
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.egg-info/
+.env
+*.env
+index/
