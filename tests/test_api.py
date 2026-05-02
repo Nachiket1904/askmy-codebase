@@ -7,7 +7,10 @@ import src.api as api_mod
 client = TestClient(api_mod.app)
 
 
-def test_index_endpoint():
+def test_index_endpoint(tmp_path):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    repo_path = str(repo_dir)
     mock_docs = [
         MagicMock(metadata={"filepath": "src/a.py"}),
         MagicMock(metadata={"filepath": "src/b.py"}),
@@ -19,7 +22,7 @@ def test_index_endpoint():
          patch("src.api._load_index", return_value=MagicMock()), \
          patch("src.api._build_repo_map", return_value={}), \
          patch("src.api._build_chain", return_value=MagicMock()):
-        resp = client.post("/index", json={"repo_path": "/tmp/repo", "rebuild": True})
+        resp = client.post("/index", json={"repo_path": repo_path, "rebuild": True})
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "files_indexed": 2}

@@ -10,6 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from src.github_loader import resolve_repo_path
 from src.embedder import get_index_path
+from src.context_builder import gather_context, load_context
 
 load_dotenv()
 if not os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENAI_API_KEY_N"):
@@ -78,9 +79,9 @@ def load_index(index_path):
     return _f(index_path)
 
 
-def build_chain(retriever, repo_map):
+def build_chain(retriever, repo_map, codebase_context=None):
     from src.retriever import build_chain as _f
-    return _f(retriever, repo_map)
+    return _f(retriever, repo_map, codebase_context)
 
 
 def review_diff(diff_path, chain, repo_map):
@@ -117,6 +118,12 @@ def run(
         except Exception as exc:
             _die(f"Indexing failed: {exc}")
 
+    codebase_context = load_context(repo_path)
+    if codebase_context is None and sys.stdin.isatty():
+        codebase_context = gather_context(repo_path)
+    elif codebase_context:
+        print(f"      Context loaded from {repo_path}/CLAUDE.md\n")
+
     print("[2/4] Building repository map...")
     try:
         with _Spinner("Parsing files..."):
@@ -129,7 +136,7 @@ def run(
     try:
         with _Spinner("Initializing model..."):
             retriever = load_index(resolved_index_path)
-            chain = build_chain(retriever, repo_map)
+            chain = build_chain(retriever, repo_map, codebase_context)
         print("      Ready.\n")
     except Exception as exc:
         _die(
