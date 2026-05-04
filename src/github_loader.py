@@ -1,11 +1,14 @@
+import re
 import shutil
 import tempfile
 
 import git
 
+_GITHUB_URL_RE = re.compile(r'^https://github\.com/[\w\-]+/[\w\-\.]+(/.*)?$')
+
 
 def is_github_url(path: str) -> bool:
-    return path.startswith("https://github.com/")
+    return bool(_GITHUB_URL_RE.match(path))
 
 
 def resolve_repo_path(path: str) -> tuple[str, bool]:

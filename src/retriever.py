@@ -1,11 +1,61 @@
+import hashlib
+import json
 import os
+import pickle
+from pathlib import Path
+from typing import Any
 
 from langchain_openai import ChatOpenAI
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
+from langchain.retrievers import EnsembleRetriever
+from src.embedder import get_embeddings
 
+try:
+    from bm25 import BM25Index
+    _BM25_AVAILABLE = True
+except ImportError:
+    _BM25_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# BM25 retriever wrapping the project's custom BM25Index
+# ---------------------------------------------------------------------------
+
+class _BM25Retriever(BaseRetriever):
+    """Wraps BM25Index as a LangChain-compatible retriever for keyword search."""
+
+    bm25_index: Any
+    k: int = 4
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> list[Document]:
+        results = self.bm25_index.search(query, k=self.k)
+        return [
+            Document(page_content=d["content"], metadata=d.get("metadata", {}))
+            for d, _ in results
+        ]
+
+
+def _build_bm25_retriever(chunks: list, k: int = 4) -> _BM25Retriever:
+    bm25 = BM25Index()
+    bm25.add_documents([
+        {"content": chunk.page_content, "metadata": chunk.metadata}
+        for chunk in chunks
+    ])
+    return _BM25Retriever(bm25_index=bm25, k=k)
+
+
+# ---------------------------------------------------------------------------
+# Existing chain helpers
+# ---------------------------------------------------------------------------
 
 class _LLMChain:
     def __init__(self, prompt):
@@ -50,10 +100,50 @@ def _format_repo_map(repo_map: dict) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Index loading with integrity check + hybrid retrieval
+# ---------------------------------------------------------------------------
+
+def _verify_index_manifest(index_dir: Path) -> None:
+    manifest_path = index_dir / "index.manifest"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Index integrity manifest missing at {index_dir}. "
+            "Re-run indexing to rebuild the index."
+        )
+    manifest = json.loads(manifest_path.read_text())
+    for fname, expected_hash in manifest.items():
+        actual = hashlib.sha256((index_dir / fname).read_bytes()).hexdigest()
+        if actual != expected_hash:
+            raise ValueError(
+                f"Index file '{fname}' failed integrity check — it may have been tampered with. "
+                "Re-run indexing to rebuild."
+            )
+
+
 def load_index(index_path: str):
-    embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-    index = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
-    return index.as_retriever()
+    """Load FAISS + BM25 and return an EnsembleRetriever (or FAISS-only if no chunks saved)."""
+    safe_path = Path(index_path).resolve()
+    if not safe_path.exists():
+        raise FileNotFoundError(f"Index not found: {index_path}")
+    _verify_index_manifest(safe_path)
+
+    faiss_index = FAISS.load_local(
+        str(safe_path), get_embeddings(), allow_dangerous_deserialization=True
+    )
+    faiss_retriever = faiss_index.as_retriever(search_kwargs={"k": 6})
+
+    chunks_file = safe_path / "chunks.pkl"
+    if _BM25_AVAILABLE and chunks_file.exists():
+        chunks = pickle.loads(chunks_file.read_bytes())
+        bm25_retriever = _build_bm25_retriever(chunks, k=6)
+        # FAISS handles semantic similarity; BM25 handles exact keyword/identifier matches
+        return EnsembleRetriever(
+            retrievers=[faiss_retriever, bm25_retriever],
+            weights=[0.6, 0.4],
+        )
+
+    return faiss_retriever
 
 
 def build_chain(retriever, repo_map: dict, codebase_context: str | None = None) -> CodeRetrievalChain:

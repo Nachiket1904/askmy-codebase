@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+import secrets
 import tempfile
 import threading
 from contextlib import asynccontextmanager
@@ -21,16 +23,19 @@ _state: dict = {}
 _state_lock = threading.Lock()
 
 _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+_GITHUB_URL_RE = re.compile(r'^https://github\.com/[\w\-]+/[\w\-\.]+(/.*)?$')
 
 
 def _require_api_key(api_key: str | None = Security(_API_KEY_HEADER)):
-    secret = os.environ.get("API_SECRET_KEY", "")
-    if secret and api_key != secret:
+    secret = os.environ.get("API_SECRET_KEY")
+    if not secret:
+        return  # unauthenticated dev mode — warning already logged at startup
+    if not api_key or not secrets.compare_digest(api_key, secret):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def _validate_repo_path(repo_path: str) -> str:
-    if repo_path.startswith("https://github.com/"):
+    if _GITHUB_URL_RE.match(repo_path):
         return repo_path
     resolved = os.path.realpath(repo_path)
     if not os.path.isdir(resolved):
@@ -43,14 +48,14 @@ def _load_codebase(repo_path, **kwargs):
     return _f(repo_path, **kwargs)
 
 
-def _build_index(repo_path):
+def _build_index(repo_path, index_path=None):
     from src.embedder import build_index as _f
-    return _f(repo_path)
+    return _f(repo_path, index_path)
 
 
-def _save_index(index, path):
+def _save_index(index, path, chunks=None, repo_path=None):
     from src.embedder import save_index as _f
-    return _f(index, path)
+    return _f(index, path, chunks, repo_path)
 
 
 def _load_index(index_path):
@@ -133,8 +138,8 @@ def index_repo(req: IndexRequest, _: None = Depends(_require_api_key)):
     if os.path.isdir(index_path) and not req.rebuild:
         retriever = _load_index(index_path)
     else:
-        index = _build_index(validated_path)
-        _save_index(index, index_path)
+        index, chunks = _build_index(validated_path, index_path)
+        _save_index(index, index_path, chunks, validated_path)
         retriever = _load_index(index_path)
 
     repo_map = _build_repo_map(validated_path)
@@ -183,6 +188,7 @@ def review(req: ReviewRequest, _: None = Depends(_require_api_key)):
     ) as f:
         f.write(req.diff)
         tmp_path = f.name
+    os.chmod(tmp_path, 0o600)
 
     try:
         result = _review_diff(tmp_path, chain, repo_map)

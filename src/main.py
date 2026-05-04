@@ -59,14 +59,19 @@ def load_codebase(repo_path, **kwargs):
     return _f(repo_path, **kwargs)
 
 
-def build_index(repo_path):
+def build_index(repo_path, index_path=None):
     from src.embedder import build_index as _f
-    return _f(repo_path)
+    return _f(repo_path, index_path)
 
 
-def save_index(index, path):
+def save_index(index, path, chunks=None, repo_path=None):
     from src.embedder import save_index as _f
-    return _f(index, path)
+    return _f(index, path, chunks, repo_path)
+
+
+def has_index_changes(repo_path, index_path):
+    from src.embedder import has_index_changes as _f
+    return _f(repo_path, index_path)
 
 
 def build_repo_map(repo_path):
@@ -114,16 +119,26 @@ def run(
     if model:
         os.environ["OPENAI_CHAT_MODEL"] = model
 
-    use_existing = os.path.isdir(resolved_index_path) and not rebuild_index
+    index_exists = os.path.isdir(resolved_index_path) and not rebuild_index
+    use_existing = index_exists and not has_index_changes(repo_path, resolved_index_path)
 
     if use_existing:
-        print(f"[1/4] Using index at: {resolved_index_path}/ ({repo_name})  (--rebuild-index to force rebuild)")
+        print(f"[1/4] No changes detected — using index at: {resolved_index_path}/  (--rebuild-index to force rebuild)")
+    elif index_exists:
+        print(f"[1/4] Changes detected — updating index from: {repo_path}")
+        try:
+            with _Spinner("Embedding changed chunks (cache used for unchanged)..."):
+                index, chunks = build_index(repo_path, resolved_index_path)
+                save_index(index, resolved_index_path, chunks, repo_path)
+            print(f"      Index updated at {resolved_index_path}/")
+        except Exception as exc:
+            _die(f"Indexing failed: {exc}")
     else:
         print(f"[1/4] Indexing codebase from: {repo_path}")
         try:
             with _Spinner("Embedding code chunks..."):
-                index = build_index(repo_path)
-                save_index(index, resolved_index_path)
+                index, chunks = build_index(repo_path, resolved_index_path)
+                save_index(index, resolved_index_path, chunks, repo_path)
             print(f"      Index saved to {resolved_index_path}/")
         except Exception as exc:
             _die(f"Indexing failed: {exc}")
@@ -214,16 +229,25 @@ def run_generate_claude_md(
     if model:
         os.environ["OPENAI_CHAT_MODEL"] = model
 
-    use_existing = os.path.isdir(resolved_index_path) and not rebuild_index
+    index_exists = os.path.isdir(resolved_index_path) and not rebuild_index
+    use_existing = index_exists and not has_index_changes(repo_path, resolved_index_path)
 
     if use_existing:
-        print(f"[1/4] Using index at: {resolved_index_path}/ ({repo_name})")
+        print(f"[1/4] No changes detected — using index at: {resolved_index_path}/ ({repo_name})")
+    elif index_exists:
+        print(f"[1/4] Changes detected — updating index from: {repo_path}")
+        try:
+            with _Spinner("Embedding changed chunks (cache used for unchanged)..."):
+                index, chunks = build_index(repo_path, resolved_index_path)
+                save_index(index, resolved_index_path, chunks, repo_path)
+        except Exception as exc:
+            _die(f"Indexing failed: {exc}")
     else:
         print(f"[1/4] Indexing codebase from: {repo_path}")
         try:
             with _Spinner("Embedding code chunks..."):
-                index = build_index(repo_path)
-                save_index(index, resolved_index_path)
+                index, chunks = build_index(repo_path, resolved_index_path)
+                save_index(index, resolved_index_path, chunks, repo_path)
         except Exception as exc:
             _die(f"Indexing failed: {exc}")
 

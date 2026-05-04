@@ -31,6 +31,8 @@ def review_diff(diff_path: str, chain, repo_map: dict) -> dict:
     for filename, chunk in file_chunks.items():
         safe_filename = re.sub(r"[^\w./\-]", "_", filename)[:200]
         safe_chunk = chunk[:_MAX_DIFF_CHARS] + ("...[truncated]" if len(chunk) > _MAX_DIFF_CHARS else "")
+        # Escape any closing XML-like tags in the diff to prevent prompt injection
+        safe_chunk = safe_chunk.replace("</", "<\\/")
         question = (
             f"Review this git diff for `{safe_filename}`. "
             "Does it deviate from the existing patterns in the codebase? "
