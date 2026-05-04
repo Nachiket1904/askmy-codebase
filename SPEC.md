@@ -101,3 +101,62 @@ chain = ConversationalRetrievalChain.from_llm(
 - Wraps main.py as a local HTTP server (FastAPI)
 - VS Code sidebar calls localhost API
 - Completely separate from core src/
+
+---
+
+## Completed Features (Built)
+
+### Core Pipeline (Phases 1-5)
+- File ingestion with metadata (filename, filepath, line numbers)
+- Language-aware chunking via RecursiveCharacterTextSplitter
+- AST parsing with tree-sitter (functions, classes, imports)
+- FAISS vector index with HuggingFace embeddings (local, free)
+- LCEL retrieval chain with repo map injected as context
+- CLI with argparse: --repo_path, --index_path, --model, --rebuild-index, --mode
+
+### Extended Features (Phases 6-9)
+- PR Reviewer: analyze git diffs against codebase patterns
+- FastAPI server: /index, /query, /review endpoints
+- GitHub URL support: auto-clone public repos, reject private with message
+- Per-repo index isolation: ./index/<md5hash>/ per repo
+
+### Cost Optimizations
+- HuggingFace embeddings instead of OpenAI (zero cost, fully local)
+- GPT-nano instead of GPT-4
+- Per-repo index caching (no redundant re-indexing)
+
+---
+
+## Phase 10 — CLAUDE.md Generator
+
+### Goal
+Use the tool's own understanding of a codebase to auto-generate a CLAUDE.md
+file that makes future Claude Code sessions faster and cheaper.
+
+### How it works
+- Runs 6 targeted queries against the indexed codebase
+- Combines answers into structured CLAUDE.md format
+- Saves to root of the repo or prints to terminal
+- Triggered via: --mode generate-claude-md
+
+### Questions asked internally
+1. "Give a 2 sentence summary of what this codebase does"
+2. "What is the tech stack used in this project?"
+3. "List every file in src/ and what it does in one sentence each"
+4. "What are the most important functions a developer should know about?"
+5. "How do you run this project and its tests?"
+6. "Are there any known issues, gotchas or things to avoid?"
+
+### New files
+- src/claude_md_generator.py
+
+### Modified files
+- src/main.py (new --mode option only)
+
+---
+
+## Phase 11 — VS Code Extension (Planned)
+- New folder: vscode-extension/
+- Sidebar chat UI calling FastAPI server on localhost
+- Clickable file references in answers
+- One-click CLAUDE.md generation from sidebar
