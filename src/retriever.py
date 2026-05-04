@@ -56,13 +56,19 @@ def load_index(index_path: str):
     return index.as_retriever()
 
 
-def build_chain(retriever, repo_map: dict) -> CodeRetrievalChain:
+def build_chain(retriever, repo_map: dict, codebase_context: str | None = None) -> CodeRetrievalChain:
     repo_map_text = _format_repo_map(repo_map)
+
+    context_section = (
+        f"\nCODEBASE CONTEXT (from CLAUDE.md):\n{codebase_context}\n"
+        if codebase_context else ""
+    )
 
     system_template = (
         "You are an expert code assistant with deep knowledge of this repository.\n\n"
         "REPOSITORY STRUCTURE:\n"
-        f"{repo_map_text}\n\n"
+        f"{repo_map_text}\n"
+        f"{context_section}\n"
         "Use the repository map to understand file relationships and the retrieved "
         "code chunks to answer accurately. Always cite the source file."
     )

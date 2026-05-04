@@ -31,10 +31,10 @@ def test_run_builds_index_when_no_existing_index():
         run("/fake/repo")
 
     mock_build_idx.assert_called_once_with("/fake/repo")
-    mock_save_idx.assert_called_once_with(mock_index, "./index")
+    mock_save_idx.assert_called_once_with(mock_index, "./index/411a6af354")
     mock_repo_map.assert_called_once_with("/fake/repo")
-    mock_load_idx.assert_called_once_with("./index")
-    mock_build_chain.assert_called_once_with(mock_retriever, {"src/auth.py": {}})
+    mock_load_idx.assert_called_once_with("./index/411a6af354")
+    mock_build_chain.assert_called_once_with(mock_retriever, {"src/auth.py": {}}, None)
 
 
 def test_run_skips_index_build_when_index_exists():
@@ -89,8 +89,8 @@ def test_run_custom_index_path_is_passed_through():
         from src.main import run
         run("/fake/repo", index_path="./custom-index")
 
-    mock_save_idx.assert_called_once_with(mock_index, "./custom-index")
-    mock_load_idx.assert_called_once_with("./custom-index")
+    mock_save_idx.assert_called_once_with(mock_index, "./custom-index/411a6af354")
+    mock_load_idx.assert_called_once_with("./custom-index/411a6af354")
 
 
 def test_run_model_flag_sets_env_var():

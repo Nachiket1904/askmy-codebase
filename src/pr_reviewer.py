@@ -29,9 +29,10 @@ def review_diff(diff_path: str, chain, repo_map: dict) -> dict:
 
     _MAX_DIFF_CHARS = 8000
     for filename, chunk in file_chunks.items():
+        safe_filename = re.sub(r"[^\w./\-]", "_", filename)[:200]
         safe_chunk = chunk[:_MAX_DIFF_CHARS] + ("...[truncated]" if len(chunk) > _MAX_DIFF_CHARS else "")
         question = (
-            f"Review this git diff for `{filename}`. "
+            f"Review this git diff for `{safe_filename}`. "
             "Does it deviate from the existing patterns in the codebase? "
             "If yes, describe the issue and suggest a fix. "
             "If no deviations, reply with 'No deviations found.'\n\n"

@@ -10,6 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from src.github_loader import resolve_repo_path
 from src.embedder import get_index_path
+from src.context_builder import gather_context, load_context
 
 load_dotenv()
 if not os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENAI_API_KEY_N"):
@@ -78,14 +79,24 @@ def load_index(index_path):
     return _f(index_path)
 
 
-def build_chain(retriever, repo_map):
+def build_chain(retriever, repo_map, codebase_context=None):
     from src.retriever import build_chain as _f
-    return _f(retriever, repo_map)
+    return _f(retriever, repo_map, codebase_context)
 
 
 def review_diff(diff_path, chain, repo_map):
     from src.pr_reviewer import review_diff as _f
     return _f(diff_path, chain, repo_map)
+
+
+def generate_claude_md(repo_path, repo_map, chain):
+    from src.claude_md_generator import generate_claude_md as _f
+    return _f(repo_path, repo_map, chain)
+
+
+def save_claude_md(content, repo_path):
+    from src.claude_md_generator import save_claude_md as _f
+    return _f(content, repo_path)
 
 
 # --- Core pipeline ------------------------------------------------------------
@@ -117,6 +128,12 @@ def run(
         except Exception as exc:
             _die(f"Indexing failed: {exc}")
 
+    codebase_context = load_context(repo_path)
+    if codebase_context is None and sys.stdin.isatty():
+        codebase_context = gather_context(repo_path)
+    elif codebase_context:
+        print(f"      Context loaded from {repo_path}/CLAUDE.md\n")
+
     print("[2/4] Building repository map...")
     try:
         with _Spinner("Parsing files..."):
@@ -129,7 +146,7 @@ def run(
     try:
         with _Spinner("Initializing model..."):
             retriever = load_index(resolved_index_path)
-            chain = build_chain(retriever, repo_map)
+            chain = build_chain(retriever, repo_map, codebase_context)
         print("      Ready.\n")
     except Exception as exc:
         _die(
@@ -139,7 +156,8 @@ def run(
 
     chat_history = []
     print("[4/4] Starting chat session.")
-    print("Ask questions about the codebase. Type 'exit' to quit.\n")
+    print("Ask questions about the codebase. Type 'exit' to quit.")
+    print("Tip: Run with --mode generate-claude-md to generate a CLAUDE.md for this repo\n")
     try:
         while True:
             try:
@@ -179,6 +197,76 @@ def run(
     finally:
         if is_temp:
             shutil.rmtree(repo_path, ignore_errors=True)
+
+
+# --- CLAUDE.md generation pipeline -------------------------------------------
+
+def run_generate_claude_md(
+    repo_path: str,
+    index_path: str = "./index",
+    model: str | None = None,
+    rebuild_index: bool = False,
+) -> None:
+    repo_path, is_temp = resolve_repo_path(repo_path)
+    resolved_index_path = get_index_path(index_path, repo_path)
+    repo_name = repo_path.rstrip("/").rstrip("\\").split("/")[-1].split("\\")[-1]
+
+    if model:
+        os.environ["OPENAI_CHAT_MODEL"] = model
+
+    use_existing = os.path.isdir(resolved_index_path) and not rebuild_index
+
+    if use_existing:
+        print(f"[1/4] Using index at: {resolved_index_path}/ ({repo_name})")
+    else:
+        print(f"[1/4] Indexing codebase from: {repo_path}")
+        try:
+            with _Spinner("Embedding code chunks..."):
+                index = build_index(repo_path)
+                save_index(index, resolved_index_path)
+        except Exception as exc:
+            _die(f"Indexing failed: {exc}")
+
+    print("[2/4] Building repository map...")
+    try:
+        with _Spinner("Parsing files..."):
+            repo_map = build_repo_map(repo_path)
+    except Exception as exc:
+        _die(f"Repo map failed: {exc}")
+
+    print("[3/4] Loading retrieval chain...")
+    try:
+        with _Spinner("Initializing model..."):
+            retriever = load_index(resolved_index_path)
+            chain = build_chain(retriever, repo_map)
+        print("      Ready.\n")
+    except Exception as exc:
+        _die(f"Chain initialization failed: {exc}")
+
+    print("[4/4] Generating CLAUDE.md (6 queries)...")
+    try:
+        with _Spinner("Querying codebase..."):
+            content = generate_claude_md(repo_path, repo_map, chain)
+    except Exception as exc:
+        if is_temp:
+            shutil.rmtree(repo_path, ignore_errors=True)
+        _die(f"Generation failed: {exc}")
+
+    # For cloned GitHub repos, save destination is cwd (temp dir is gone after cleanup)
+    save_dest = os.getcwd() if is_temp else repo_path
+    if is_temp:
+        shutil.rmtree(repo_path, ignore_errors=True)
+
+    try:
+        answer = input(f"\nSave CLAUDE.md to {save_dest}? (y/n) ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+
+    if answer == "y":
+        saved_path = save_claude_md(content, save_dest)
+        print(f"Saved to {saved_path}")
+    else:
+        print("\n" + content)
 
 
 # --- PR Review pipeline -------------------------------------------------------
@@ -255,9 +343,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["chat", "pr-review"],
+        choices=["chat", "pr-review", "generate-claude-md"],
         default="chat",
-        help="Operation mode: 'chat' (default) or 'pr-review'",
+        help="Operation mode: 'chat' (default), 'pr-review', or 'generate-claude-md'",
     )
     parser.add_argument(
         "--diff",
@@ -287,6 +375,13 @@ def main() -> None:
             diff_path=str(diff_path),
             index_path=args.index_path,
             model=args.model,
+        )
+    elif args.mode == "generate-claude-md":
+        run_generate_claude_md(
+            args.repo_path,
+            index_path=args.index_path,
+            model=args.model,
+            rebuild_index=args.rebuild_index,
         )
     else:
         run(
