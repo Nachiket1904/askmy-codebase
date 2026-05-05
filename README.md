@@ -1,365 +1,263 @@
-# Codebase Knowledge AI
+# askmy-codebase
 
-Chat with any codebase in plain English and get answers with exact source file references. Point it at a local repo or a GitHub URL — it indexes the code locally, builds a structural map, and lets you ask questions like "Where is the auth flow?" or "How does the payment module connect to the database?"
+Chat with any codebase using AI — from your terminal or via REST API. Point it at a local folder or a GitHub URL, ask questions in plain English, and get answers grounded in the actual source code.
 
-Embeddings run **fully locally** (no API cost). Only the chat LLM calls OpenAI.
+## Key Features
+
+- **Terminal CLI** — `askmy-codebase --repo_path .` works from any directory after a one-time install
+- **GitHub URL support** — clones and indexes any public repo on the fly
+- **Hybrid search** — combines FAISS vector search with BM25 keyword search for better retrieval
+- **PR review mode** — feed it a `.diff` file and get a structured code review
+- **CLAUDE.md generator** — auto-generate a codebase summary file for any repo
+- **REST API** — run it as a FastAPI server for programmatic access
+- **Incremental indexing** — only re-embeds files that changed since the last run
+- **No cloud embedding** — uses `BAAI/bge-small-en-v1.5` locally (free, private)
+
+---
 
 ## Table of Contents
 
-- [How it works](#how-it-works)
-- [Tech stack](#tech-stack)
+- [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
-- [Install](#install)
-- [Environment setup](#environment-setup)
-- [Usage — CLI chat](#usage--cli-chat)
-- [Usage — PR review](#usage--pr-review)
-- [Usage — REST API server](#usage--rest-api-server)
-- [Codebase context (CLAUDE.md)](#codebase-context-claudemd)
-- [Index isolation](#index-isolation)
-- [All CLI flags](#all-cli-flags)
-- [Example session](#example-session)
-- [Project structure](#project-structure)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+- [Environment Variables](#environment-variables)
+- [REST API](#rest-api)
+- [Deployment on Render](#deployment-on-render)
 - [Architecture](#architecture)
-- [Run tests](#run-tests)
+- [Project Structure](#project-structure)
+- [Running Tests](#running-tests)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## How it works
-
-```
-Repo / GitHub URL
-      │
-      ▼
- ingestion.py       ← loads source files, respects .claudeignore
-      │
-      ▼
- embedder.py        ← language-aware chunking → HuggingFace embeddings → FAISS index
-      │                 (stored at ./index/<sha256-hash-of-repo-path>/)
-      ▼
- ast_parser.py      ← tree-sitter AST → repo map (files, classes, functions)
-      │
-      ▼
- context_builder.py ← loads or gathers CLAUDE.md context on first run
-      │
-      ▼
- retriever.py       ← similarity search + GPT chain with repo map + CLAUDE.md context
-      │
-      ▼
- Answer with source file references
-```
-
----
-
-## Tech stack
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.11+ |
-| Embeddings | `sentence-transformers` — `BAAI/bge-small-en-v1.5` (local, free) |
-| Vector store | FAISS (local, no server needed) |
-| AST parsing | `tree-sitter` (Python, JavaScript) |
+| Language | Python 3.9+ |
 | LLM | OpenAI GPT (default: `gpt-4.1-nano-2025-04-14`) |
-| LLM framework | LangChain |
+| Embeddings | HuggingFace `BAAI/bge-small-en-v1.5` (local) |
+| Vector Store | FAISS (CPU) |
+| Keyword Search | BM25 (rank-bm25) |
+| Code Parsing | tree-sitter (Python, JS) |
+| Orchestration | LangChain |
 | REST API | FastAPI + Uvicorn |
-| Config | `python-dotenv` |
+| Deployment | Docker / Render |
 
 ---
 
 ## Prerequisites
 
-- Python 3.11 or higher
-- An OpenAI API key
-- Git (required if indexing GitHub URLs)
+- Python 3.9 or higher
+- An [OpenAI API key](https://platform.openai.com/api-keys)
+- Git (for cloning GitHub repos)
 
 ---
 
-## Install
+## Installation
+
+### Option 1 — Install from PyPI (recommended)
 
 ```bash
-pip install -r requirements.txt
+pip install askmy-codebase
 ```
+
+### Option 2 — Install from source
+
+```bash
+git clone https://github.com/Nachiket1904/askmy-codebase.git
+cd askmy-codebase
+pip install -e .
+```
+
+### Save your API key (one time only)
+
+```bash
+askmy-codebase configure --api-key sk-xxxxx
+```
+
+This saves the key to `~/.config/askmy-codebase/config.json` so you never need a `.env` file. The key is loaded automatically on every run.
+
+> **Alternative:** Set `OPENAI_API_KEY` as an environment variable or add it to a `.env` file in your working directory.
 
 ---
 
-## Environment setup
+## Quick Start
 
-Create a `.env` file in the project root:
+```bash
+# Chat with the current directory
+askmy-codebase --repo_path .
 
+# Chat with a GitHub repo (clones automatically)
+askmy-codebase --repo_path https://github.com/username/reponame
 ```
-OPENAI_API_KEY=sk-...
-```
 
-> If your key lives under a different name (`OPENAI_API_KEY_N`), the app remaps it automatically — no change needed.
-
-**Optional variables:**
-
-| Variable | Description | Default |
-|---|---|---|
-| `OPENAI_API_KEY` | OpenAI API key for the chat LLM | *(required)* |
-| `OPENAI_CHAT_MODEL` | Model name to use for chat | `gpt-4.1-nano-2025-04-14` |
-| `API_SECRET_KEY` | Bearer token for the REST API server | *(open if unset)* |
-| `REPO_PATH` | Default repo path loaded at API server startup | *(none)* |
-| `INDEX_PATH` | Default index path used at API server startup | `./index` |
+First run downloads the embedding model (~130 MB) and builds the index. Subsequent runs reuse the index and only re-embed changed files.
 
 ---
 
-## Usage — CLI chat
+## Usage
 
-**First run** — indexes the repo and starts chat:
-
-```bash
-python -m src.main --repo_path /path/to/your/repo
-```
-
-On first run for a new repo, you will be prompted for codebase context (see [Codebase context](#codebase-context-claudemd) below). Subsequent runs load the saved context automatically.
-
-**Subsequent runs** — index is reused, no re-embedding:
+### Chat mode (default)
 
 ```bash
-python -m src.main --repo_path /path/to/your/repo
+askmy-codebase --repo_path .
 ```
 
-**Force a fresh index** (after large code changes):
-
-```bash
-python -m src.main --repo_path /path/to/your/repo --rebuild-index
 ```
-
-**Index a GitHub repo** (cloned to a temp dir, cleaned up after):
-
-```bash
-python -m src.main --repo_path https://github.com/owner/repo
-```
-
-**Use a different model:**
-
-```bash
-python -m src.main --repo_path . --model gpt-4o-mini
-```
-
-**Custom index location:**
-
-```bash
-python -m src.main --repo_path . --index_path ./my-project-index
-```
-
----
-
-## Usage — PR review
-
-Analyze a git diff against the indexed codebase and flag deviations from existing patterns:
-
-```bash
-# Generate a diff file
-git diff main..feature-branch > changes.diff
-
-# Review it
-python -m src.main --repo_path . --mode pr-review --diff changes.diff
-```
-
-Output is JSON with per-file deviations and an overall summary:
-
-```json
-{
-  "files_reviewed": ["src/api.py", "src/retriever.py"],
-  "deviations": [
-    {
-      "file": "src/api.py",
-      "issue": "Missing authentication dependency on new endpoint",
-      "suggestion": "Add `_: None = Depends(_require_api_key)` ..."
-    }
-  ],
-  "summary": "One deviation found in src/api.py. The new /status endpoint ..."
-}
-```
-
----
-
-## Usage — REST API server
-
-Start the FastAPI server:
-
-```bash
-uvicorn src.api:app --reload
-```
-
-The server exposes three endpoints, all requiring `X-API-Key: <API_SECRET_KEY>` if `API_SECRET_KEY` is set in your `.env`.
-
-### `POST /index`
-
-Index a repository (local path or GitHub URL):
-
-```bash
-curl -X POST http://localhost:8000/index \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-secret" \
-  -d '{"repo_path": "/path/to/repo", "rebuild": false}'
-```
-
-Response:
-```json
-{"status": "ok", "files_indexed": 42}
-```
-
-### `POST /query`
-
-Ask a question about the indexed codebase:
-
-```bash
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-secret" \
-  -d '{"question": "How does authentication work?"}'
-```
-
-Response:
-```json
-{
-  "answer": "Authentication is handled in src/api.py via ...",
-  "sources": ["src/api.py", "src/github_loader.py"]
-}
-```
-
-### `POST /review`
-
-Review a raw diff string:
-
-```bash
-curl -X POST http://localhost:8000/review \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-secret" \
-  -d "{\"diff\": \"$(cat changes.diff)\"}"
-```
-
-Response: same structure as the CLI PR review output.
-
----
-
-## Codebase context (CLAUDE.md)
-
-On the **first chat session** for any repo, the assistant prompts you with four quick questions about the codebase:
-
-```
---- Codebase Context Setup ---
-Answer a few questions so the assistant has context for this repo.
-Answers are saved as CLAUDE.md in the repo root.
-
-  What does this codebase do? (1-2 sentences)
-  > A FastAPI service that handles payment processing for the storefront.
-
-  What are the main modules or components?
-  > payments, orders, webhooks, auth
-
-  What language(s) and frameworks does it use?
-  > Python, FastAPI, PostgreSQL, Stripe SDK
-
-  Any known issues, gotchas, or important context? (Enter to skip)
-  > Stripe webhook verification must stay in place — do not remove it.
-
-  Context saved to /path/to/repo/CLAUDE.md
-```
-
-The answers are written to `CLAUDE.md` in the repo root. On every subsequent run the file is loaded automatically and injected into the LLM's system prompt — so answers are grounded in your own description of the project, not just code pattern matching.
-
-**Editing context manually:** `CLAUDE.md` is plain Markdown — open it in any editor and update it whenever the codebase changes significantly.
-
-**Skipping context setup:** Run in non-interactive mode (e.g., piped input, CI) and the Q&A is skipped automatically. The file is only created when `stdin` is a TTY.
-
----
-
-## Index isolation
-
-Each repository gets its own FAISS index subfolder named by a SHA-256 hash of the repo path:
-
-```
-./index/
-  a3f9c12b01/   ← repo A
-  7e4d8f2c99/   ← repo B
-```
-
-Switching repos never loads the wrong index or triggers an unnecessary rebuild. The resolved path is printed at startup:
-
-```
-[1/4] Using index at: ./index/a3f9c12b01/ (my-repo)  (--rebuild-index to force rebuild)
-```
-
----
-
-## All CLI flags
-
-| Flag | Default | Description |
-|---|---|---|
-| `--repo_path` | *(required)* | Local path or GitHub URL to index |
-| `--index_path` | `./index` | Base directory for FAISS indexes |
-| `--model` | `gpt-4.1-nano-2025-04-14` | OpenAI chat model |
-| `--rebuild-index` | off | Force re-indexing even if an index exists |
-| `--mode` | `chat` | `chat` or `pr-review` |
-| `--diff` | *(none)* | Path to `.diff` file (required for `--mode pr-review`) |
-
----
-
-## Example session
-
-```
-[1/4] Using index at: ./index/a3f9c12b01/ (code_assistant)  (--rebuild-index to force rebuild)
-      Context loaded from /path/to/code_assistant/CLAUDE.md
-
+[1/4] Indexing codebase from: /your/project
+      Index saved to ./index/abc123/
 [2/4] Building repository map...
-      Mapped 8 file(s)
+      Mapped 12 file(s)
 [3/4] Loading retrieval chain...
       Ready.
 
 [4/4] Starting chat session.
 Ask questions about the codebase. Type 'exit' to quit.
 
-> How does the .claudeignore file work?
+> How does authentication work?
 
-The .claudeignore file is read by load_codebase() in src/ingestion.py.
-It supports glob patterns — any file whose relative path matches a pattern
-is excluded from indexing. Directory names are matched against each path
-segment, so adding `node_modules` excludes all nested paths.
+The authentication flow uses JWT tokens issued at login...
 
-Sources: src/ingestion.py
-
-> What endpoints does the API expose?
-
-The FastAPI server in src/api.py exposes three endpoints:
-- POST /index  — indexes a repo (auth required)
-- POST /query  — answers a question about the indexed repo (auth required)
-- POST /review — reviews a raw diff against the index (auth required)
-
-Sources: src/api.py
+Sources: src/auth.py, src/middleware.py
 
 > exit
 Bye.
 ```
 
+### PR review mode
+
+```bash
+# Generate a diff first
+git diff main...my-branch > changes.diff
+
+# Review it
+askmy-codebase --repo_path . --mode pr-review --diff changes.diff
+```
+
+Outputs a JSON object with a summary, file-by-file feedback, and a risk score.
+
+### Generate CLAUDE.md
+
+Creates a structured `CLAUDE.md` context file for the repo — useful for AI assistants like Claude Code.
+
+```bash
+askmy-codebase --repo_path . --mode generate-claude-md
+```
+
+### All flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--repo_path` | required | Local path or GitHub URL |
+| `--index_path` | `./index` | Where to store/load the FAISS index |
+| `--model` | `gpt-4.1-nano-2025-04-14` | OpenAI chat model to use |
+| `--mode` | `chat` | `chat`, `pr-review`, or `generate-claude-md` |
+| `--diff` | — | Path to `.diff` file (required for `pr-review`) |
+| `--rebuild-index` | false | Force re-index even if index exists |
+
 ---
 
-## Project structure
+## Environment Variables
 
+| Variable | Description | Required |
+|---|---|---|
+| `OPENAI_API_KEY` | Your OpenAI API key | Yes (or use `configure`) |
+| `OPENAI_CHAT_MODEL` | Override the default chat model | No |
+| `API_SECRET_KEY` | Secret key for REST API auth | No (dev mode if unset) |
+| `REPO_PATH` | Pre-load a repo at API server startup | No |
+| `INDEX_PATH` | Base directory for FAISS indexes | No (default: `./index`) |
+
+---
+
+## REST API
+
+Run as an API server for programmatic access:
+
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```
-src/
-  main.py            — CLI entry point (chat + PR review modes)
-  ingestion.py       — loads source files, applies .claudeignore rules
-  embedder.py        — language-aware chunking, HuggingFace embeddings, FAISS index
-  ast_parser.py      — tree-sitter AST: extracts functions, classes, imports
-  retriever.py       — FAISS retriever + GPT chain builder
-  context_builder.py — CLAUDE.md creation and loading (codebase context)
-  github_loader.py   — GitHub URL detection and temp-dir cloning
-  pr_reviewer.py     — diff splitting and per-file deviation analysis
-  api.py             — FastAPI server (index / query / review endpoints)
 
-tests/
-  test_embedder.py
-  test_ast_parser.py
-  test_retriever.py
-  test_main.py
-  test_ingestion.py
-  test_github_loader.py
-  test_pr_reviewer.py
-  test_api.py
+Interactive docs available at `http://localhost:8000/docs`.
+
+### Endpoints
+
+#### `POST /index`
+
+Index a repository (required before querying).
+
+```bash
+curl -X POST http://localhost:8000/index \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret" \
+  -d '{"repo_path": "https://github.com/username/repo", "rebuild": false}'
+```
+
+```json
+{ "status": "ok", "files_indexed": 24 }
+```
+
+#### `POST /query`
+
+Ask a question about the indexed codebase.
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret" \
+  -d '{"question": "How does the ingestion pipeline work?"}'
+```
+
+```json
+{
+  "answer": "The ingestion pipeline loads source files using GenericLoader...",
+  "sources": ["src/ingestion.py", "src/embedder.py"]
+}
+```
+
+#### `POST /review`
+
+Review a diff string.
+
+```bash
+curl -X POST http://localhost:8000/review \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret" \
+  -d '{"diff": "--- a/src/api.py\n+++ b/src/api.py\n..."}'
+```
+
+---
+
+## Deployment on Render
+
+The repo includes a `render.yaml` and `Dockerfile` for one-click deployment.
+
+1. Fork/push this repo to GitHub
+2. Go to [render.com](https://render.com) → **New Web Service** → connect your repo
+3. Render detects `render.yaml` and configures automatically
+4. Set these environment variables in the Render dashboard:
+   - `OPENAI_API_KEY` — your OpenAI key
+   - `API_SECRET_KEY` — a random secret for API auth
+5. Deploy
+
+> **Note:** The free tier uses ephemeral storage (`/tmp/index`). The index is rebuilt after each redeploy. For persistence, attach a Render Disk and set `INDEX_PATH` to a persistent path.
+
+### Calling the deployed API
+
+```bash
+# Index a repo
+curl -X POST https://your-app.onrender.com/index \
+  -H "X-API-Key: your-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"repo_path": "https://github.com/username/repo"}'
+
+# Query it
+curl -X POST https://your-app.onrender.com/query \
+  -H "X-API-Key: your-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What does this project do?"}'
 ```
 
 ---
@@ -367,87 +265,124 @@ tests/
 ## Architecture
 
 ```
-                        ┌─────────────────────────────────┐
-                        │         User / CI / IDE          │
-                        └────────────┬────────────────────┘
-                                     │
-                     ┌───────────────┼────────────────┐
-                     │               │                │
-               CLI (main.py)   REST API (api.py)  PR Review
-                     │               │                │
-                     └───────────────┴────────────────┘
-                                     │
-              ┌──────────────────────▼──────────────────────┐
-              │              Core Pipeline                   │
-              │                                              │
-              │  github_loader → ingestion → embedder        │
-              │       ↓              ↓           ↓           │
-              │  (clone URL)    (load files)  (FAISS index)  │
-              │                                              │
-              │  ast_parser → repo map                       │
-              │                                              │
-              │  context_builder → CLAUDE.md context         │
-              │                                              │
-              │  retriever → similarity search + GPT chain   │
-              └──────────────────────────────────────────────┘
+repo_path (local or GitHub URL)
+        │
+        ▼
+  [github_loader]  ← clones GitHub URLs to temp dir
+        │
+        ▼
+  [ingestion]      ← loads .py/.js/.ts/.java files, respects .claudeignore
+        │
+        ▼
+  [embedder]       ← splits by language, embeds with BAAI/bge-small-en-v1.5
+        │           ← caches embeddings on disk (incremental re-indexing)
+        ▼
+  [FAISS index]  +  [BM25 index]
+        │                │
+        └──────┬──────────┘
+               ▼
+         [retriever]      ← hybrid search: vector + keyword, re-ranked
+               │
+               ▼
+         [LangChain chain] ← ConversationalRetrievalChain with GPT
+               │
+               ▼
+           answer + sources
 ```
 
-### Key design decisions
+### How hybrid retrieval works
 
-- **Local embeddings** — `BAAI/bge-small-en-v1.5` runs on CPU, costs nothing, and keeps your code off third-party servers.
-- **Index isolation** — SHA-256 hash of the repo path as the index subfolder name. Different repos never collide; same repo always reuses its index.
-- **CLAUDE.md context** — Human-supplied description injected into every LLM call. Compensates for what embeddings can't capture (intent, constraints, team conventions).
-- **Repo map in system prompt** — Full file/class/function index from tree-sitter always in context, so the LLM knows the shape of the codebase even for questions where retrieved chunks are sparse.
+For each query, two retrievers run in parallel:
+- **FAISS** finds semantically similar chunks (meaning-based)
+- **BM25** finds chunks with matching keywords (exact-match)
+
+Results are merged and de-duplicated. This handles both conceptual questions ("how does auth work?") and exact lookups ("find where `load_codebase` is called").
+
+### Index isolation
+
+Each repo gets its own index directory keyed by a SHA-256 hash of the repo path. Running against two different repos never overwrites each other's index.
+
+```
+./index/
+  a3f7c12b4e/   ← hash of /projects/repo-a
+  9d2e1f8c03/   ← hash of /projects/repo-b
+```
 
 ---
 
-## Run tests
+## Project Structure
+
+```
+askmy-codebase/
+├── src/
+│   ├── main.py                 # CLI entry point, all modes
+│   ├── api.py                  # FastAPI REST server
+│   ├── ingestion.py            # File loading, .claudeignore support
+│   ├── embedder.py             # FAISS index build/save/load, incremental
+│   ├── retriever.py            # Hybrid BM25+FAISS retrieval, LangChain chain
+│   ├── github_loader.py        # Clone GitHub URLs to temp dir
+│   ├── ast_parser.py           # tree-sitter repo map (functions, classes)
+│   ├── pr_reviewer.py          # Diff review pipeline
+│   ├── claude_md_generator.py  # CLAUDE.md generation
+│   └── context_builder.py      # Load/save CLAUDE.md context
+├── tests/                      # pytest test suite (21 tests)
+├── .github/
+│   └── workflows/
+│       └── publish.yml         # Auto-publish to PyPI on GitHub release
+├── Dockerfile                  # Docker build (pre-downloads embedding model)
+├── render.yaml                 # Render deployment config
+├── setup.py                    # Package entry point
+├── pyproject.toml              # Build metadata
+└── requirements.txt            # All dependencies
+```
+
+---
+
+## Running Tests
 
 ```bash
+pip install pytest
 pytest tests/ -v
 ```
 
-No real API calls are made. All LLM and embedding calls are mocked.
+Expected: 21 tests passing.
+
+```bash
+# Run a specific file
+pytest tests/test_ingestion.py -v
+pytest tests/test_retriever.py -v
+```
 
 ---
 
 ## Troubleshooting
 
+### `IndexError: list index out of range` on `/index`
+
+The repo has no supported source files (`.py`, `.js`, `.ts`, `.java`). Check that `repo_path` points to a repo with code in those languages, or that the GitHub URL is correct and the repo is public.
+
 ### `OPENAI_API_KEY is not set`
 
-Add the key to `.env`:
-```
-OPENAI_API_KEY=sk-...
-```
-Or use `OPENAI_API_KEY_N` — the app remaps it automatically.
+Run `askmy-codebase configure --api-key sk-xxxxx` or export the variable:
 
-### Index loads slowly on first run
-
-The first run downloads the `BAAI/bge-small-en-v1.5` model (~130 MB) and builds the FAISS index. Both are cached — subsequent runs are fast.
-
-### Wrong answers after large refactors
-
-The index is stale. Force a rebuild:
 ```bash
-python -m src.main --repo_path . --rebuild-index
-```
-Then update `CLAUDE.md` if the architecture changed significantly.
-
-### GitHub clone fails
-
-Private repos are not supported — a clear error is raised. Ensure the URL is a public GitHub repository:
-```
-https://github.com/owner/repo
+export OPENAI_API_KEY=sk-xxxxx
 ```
 
-### `401 Unauthorized` on API endpoints
+### First run is slow
 
-Set `API_SECRET_KEY` in `.env` and pass it in requests:
-```
-X-API-Key: your-secret-value
-```
-If `API_SECRET_KEY` is not set, all endpoints are open (development only — not for production).
+The embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB) downloads on first use and is cached in `~/.cache/huggingface/`. Subsequent runs are fast.
 
-### Context Q&A skipped unexpectedly
+### Render free tier — index lost after redeploy
 
-The Q&A only runs when `stdin` is a TTY. In CI, scripts, or piped input it is skipped automatically. Run interactively in a real terminal, or create `CLAUDE.md` manually before running.
+Free tier uses ephemeral storage. The index rebuilds on every deploy. To persist it, add a Render Disk and set `INDEX_PATH=/data/index` in your environment variables.
+
+### API returns 503 "Index not loaded"
+
+Call `POST /index` first to build the index before calling `/query` or `/review`.
+
+---
+
+## License
+
+MIT
