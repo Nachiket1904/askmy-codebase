@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 import re
 
 
@@ -67,3 +68,4 @@ def review_diff(diff_path: str, chain, repo_map: dict) -> dict:
         "deviations": deviations,
         "summary": summary,
     }
+

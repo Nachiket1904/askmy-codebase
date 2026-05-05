@@ -1,5 +1,7 @@
+﻿from __future__ import annotations
 import argparse
 import itertools
+import json
 import os
 import shutil
 import sys
@@ -12,9 +14,32 @@ from src.github_loader import resolve_repo_path
 from src.embedder import get_index_path
 from src.context_builder import gather_context, load_context
 
+_CONFIG_DIR = Path.home() / ".config" / "askmy-codebase"
+_CONFIG_FILE = _CONFIG_DIR / "config.json"
+
+
+def _load_config() -> dict:
+    if _CONFIG_FILE.exists():
+        try:
+            return json.loads(_CONFIG_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_config(data: dict) -> None:
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _CONFIG_FILE.write_text(json.dumps(data, indent=2))
+    _CONFIG_FILE.chmod(0o600)
+
+
 load_dotenv()
+# Priority: env var > .env file > config file
+_cfg = _load_config()
 if not os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENAI_API_KEY_N"):
     os.environ["OPENAI_API_KEY"] = os.environ["OPENAI_API_KEY_N"]
+if not os.environ.get("OPENAI_API_KEY") and _cfg.get("api_key"):
+    os.environ["OPENAI_API_KEY"] = _cfg["api_key"]
 
 
 # --- Spinner ------------------------------------------------------------------
@@ -339,15 +364,29 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python -m src.main --repo_path .\n"
-            "  python -m src.main --repo_path . --model gpt-4o-mini\n"
-            "  python -m src.main --repo_path . --rebuild-index\n"
-            "  python -m src.main --repo_path . --index_path ./my-index"
+            "  askmy-codebase configure --api-key sk-xxxxx\n"
+            "  askmy-codebase --repo_path .\n"
+            "  askmy-codebase --repo_path https://github.com/user/repo\n"
+            "  askmy-codebase --repo_path . --model gpt-4o-mini\n"
+            "  askmy-codebase --repo_path . --rebuild-index\n"
         ),
     )
+
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    configure_parser = subparsers.add_parser(
+        "configure",
+        help="Save your OpenAI API key so you don't need a .env file",
+    )
+    configure_parser.add_argument(
+        "--api-key",
+        required=True,
+        metavar="KEY",
+        help="Your OpenAI API key (sk-...)",
+    )
+
     parser.add_argument(
         "--repo_path",
-        required=True,
         help="Path to the repository to index and query",
     )
     parser.add_argument(
@@ -378,6 +417,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.subcommand == "configure":
+        cfg = _load_config()
+        cfg["api_key"] = args.api_key
+        _save_config(cfg)
+        print(f"API key saved to {_CONFIG_FILE}")
+        print("You can now run:  askmy-codebase --repo_path <path or GitHub URL>")
+        return
+
+    if not args.repo_path:
+        parser.error("--repo_path is required (or run: askmy-codebase configure --api-key KEY)")
+
     from src.github_loader import is_github_url
     if not is_github_url(args.repo_path):
         repo = Path(args.repo_path)
@@ -386,7 +436,11 @@ def main() -> None:
         if not repo.is_dir():
             _die(f"Repository path is not a directory: '{args.repo_path}'")
     if not os.environ.get("OPENAI_API_KEY"):
-        _die("OPENAI_API_KEY is not set. Add it to your .env file as OPENAI_API_KEY or OPENAI_API_KEY_N.")
+        _die(
+            "OPENAI_API_KEY is not set.\n"
+            "  Option 1 (recommended): askmy-codebase configure --api-key sk-xxxxx\n"
+            "  Option 2: set OPENAI_API_KEY in your environment or a .env file"
+        )
 
     if args.mode == "pr-review":
         if not args.diff:
@@ -418,3 +472,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

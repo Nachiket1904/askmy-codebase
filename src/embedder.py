@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 import hashlib
 import json
 import pickle
@@ -148,3 +149,4 @@ def save_index(
         hashes = _compute_file_hashes(repo_path)
         (Path(path) / "file_hashes.json").write_text(json.dumps(hashes))
     _write_manifest(path)
+

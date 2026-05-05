@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 import re
 import shutil
 import tempfile
@@ -29,3 +30,4 @@ def resolve_repo_path(path: str) -> tuple[str, bool]:
                 f"Then run: python -m src.main --repo_path <local_folder>"
             ) from exc
         raise
+

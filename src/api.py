@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 import logging
 import os
 import re
@@ -196,3 +197,4 @@ def review(req: ReviewRequest, _: None = Depends(_require_api_key)):
         os.unlink(tmp_path)
 
     return result
+

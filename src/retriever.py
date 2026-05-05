@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 import hashlib
 import json
 import os
@@ -171,3 +172,4 @@ def build_chain(retriever, repo_map: dict, codebase_context: str | None = None) 
     llm = ChatOpenAI(model=os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1-nano-2025-04-14"), temperature=0)
 
     return CodeRetrievalChain(retriever, qa_prompt, llm)
+

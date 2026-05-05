@@ -1,10 +1,8 @@
+﻿from __future__ import annotations
 import fnmatch
 from pathlib import Path
 from langchain_community.document_loaders.generic import GenericLoader
 from langchain_community.document_loaders.parsers.language.language_parser import LanguageParser
-
-
-CLAUDEIGNORE_PATH = Path(__file__).parent.parent / ".claudeignore"
 
 
 def _load_ignore_patterns(claudeignore_path: Path) -> list[str]:
@@ -40,7 +38,8 @@ def load_codebase(repo_path: str, glob: str = "**/*", suffixes: list[str] | None
     Returns a list of LangChain Documents with metadata: source, filename, line_count.
     """
     repo_root = Path(repo_path).resolve()
-    ignore_patterns = _load_ignore_patterns(CLAUDEIGNORE_PATH)
+    # Read .claudeignore from the target repo, not from this project's root
+    ignore_patterns = _load_ignore_patterns(repo_root / ".claudeignore")
 
     if suffixes is None:
         suffixes = [".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs", ".cpp", ".c", ".h"]
@@ -66,3 +65,4 @@ def load_codebase(repo_path: str, glob: str = "**/*", suffixes: list[str] | None
         docs.append(doc)
 
     return docs
+

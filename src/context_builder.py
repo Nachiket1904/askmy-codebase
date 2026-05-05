@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 import sys
 from pathlib import Path
 
@@ -60,3 +61,4 @@ def load_context(repo_path: str) -> str | None:
     if context_path.is_file():
         return context_path.read_text(encoding="utf-8")
     return None
+
